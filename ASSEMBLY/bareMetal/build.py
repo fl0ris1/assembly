@@ -3,7 +3,7 @@ import sys
 
 #Configuration
 SOURCE_DIR = "src"
-BUILD_DIR ="dir"
+BUILD_DIR = "bin"
 BOOTLOADER_SRC = os.path.join(SOURCE_DIR, "boot.asm")
 BOOTLOADER_BIN = os.path.join(BUILD_DIR, "boot.bin")
 KERNEL_SRC = os.path.join(SOURCE_DIR, "kernel.asm")
@@ -31,7 +31,7 @@ def create_disk_image():
 
 	boot_bin = BOOTLOADER_BIN
 	kernel_bin = KERNEL_BIN
-	output_img = "main_floppy.img"
+	output_img = os.path.join(BUILD_DIR, "main_floppy.img")
 
 	with open(output_img, 'wb') as img:
 		if os.path.exists(boot_bin):
@@ -85,7 +85,7 @@ def clean_project():
 		"main_floppy.img"
 	]
 
-	for file_path in files.remove:
+	for file_path in files_to_remove:
 		if os.path.exists(file_path):
 			os.remove(file_path)
 			print(f" - Removed {file_path}")
