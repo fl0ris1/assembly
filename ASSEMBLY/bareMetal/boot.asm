@@ -10,6 +10,10 @@ start:
 	mov es, ax ;sets extra segment to 0
 	sti ;enables system interrupts
 
+	mov ah, 0x0e
+	mov al, 'M'
+	int 0x10
+
 	mov ah, 0x02 ;BIOS read sector function
 	mov al, 15 ;read 15 sectors
 	mov ch, 0 ;cylinder 0 (first cylinder)
@@ -19,15 +23,25 @@ start:
 	xor bx, bx ;sets bx to 0
 	mov es, bx ;sets extra segment to 0
 	mov bx, 0x1000 ;sets bx to 0x1000 (offset)
-	mov dl, [BOOT_DRIVE], loads boot drive number into dl
+	mov dl, [BOOT_DRIVE] ;loads boot drive number into dl
 
 	int 0x13 ;diskette interrupt
 
-	mov ah, 0x0e ;teletype
-	mov al, 'M' ;character to print
-	int 0x10 ;video interrupt
+	jc disk_error ;check if carry flag is set for general failure
 
-jmp $ ;jumps to the current line in memory, freezing the system
+	cmp al, 15 ;check if we read exactly 15 sectors
+	jne disk_error ;if al != 15 jump to error
+
+	jmp kernel_load_success
+
+disk_error:
+	mov ah, 0xe
+	mov al, 'D'
+	int 0x10
+	jmp $
+
+kernel_load_success:
+	jmp 0x0000:0x1000 ;far jump to kernel adress
 
 error:
 	mov ah, 0xe ;teletype

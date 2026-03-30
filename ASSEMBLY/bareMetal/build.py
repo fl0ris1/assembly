@@ -105,7 +105,11 @@ def main():
 			print(f"Usage: Python build.py [clean]")
 			sys.exit(1)
 
+	#compile the bootloader
 	assemble(BOOTLOADER_SRC, BOOTLOADER_BIN)
+
+	#compile the kernel
+	assemble(KERNEL_SRC, KERNEL_BIN)
 
 	create_disk_image()
 
