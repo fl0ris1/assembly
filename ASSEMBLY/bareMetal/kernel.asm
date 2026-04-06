@@ -14,8 +14,6 @@ start:
 	sti ;enables hardware interrupts
 
 	;print the character '>'
-	mov si, prompt
-	call print_string
 
 	mov bx, 0 ;initialize the buffer pointer
 
@@ -69,7 +67,104 @@ check_username:
 	mov al, 0x0a
 	int 0x10
 
-	
+	mov si, buffer ;compare input with username
+	mov di, auth_username
+	call strcmp
+	je ask_password ;jump to ask_password if usernames match
+
+	mov si, msg_denied ;print message denied if usernames do not match
+	call print_string
+
+	mov ah, 0x0e ;print new line
+	mov al, 0x0d
+	int 0x10
+	mov al, 0x0a
+	int 0x10
+
+	jmp login_screen ;try again
+
+ask_password:
+	mov bx, 0 ;reset the buffer for new input
+
+	mov si, msg_pass_prompt ;print password prompt
+	call print_string
+
+get_password_loop:
+	mov ah, 0x00 ;wait for key
+	int 0x16
+
+	cmp al, 0x0d ;handle enter (submission)
+	je check_password
+
+	cmp al, 0x08 ;handle backspace
+	je .handle_backspace_pw
+
+	cmp bx, 64 ;check if buffer full
+	je get_password_loop
+
+	mov ah, 0x0e ;echo the character
+	int 0x10
+	mov [buffer + bx], al
+
+	inc bx
+	jmp get_password_loop
+
+.handle_backspace_pw:
+	cmp bx, 0
+	je get_password_loop
+
+	dec bx
+	mov ah, 0x0e
+	mov al, 0x08
+	int 0x10
+
+	mov al, ' '
+	int 0x10
+
+	mov al, 0x08
+	int 0x10
+
+	jmp get_password_loop
+
+check_password:
+	mov byte [buffer + bx], 0 ;null terminate the input
+
+	mov ah, 0x0e
+	mov al, 0x0d ;new line
+	int 0x10
+	mov al, 0x0a
+	int 0x10
+
+	mov si, buffer
+	mov di, auth_password
+	call strcmp ;compare input with password
+	je login_success
+
+	mov si, msg_denied ;print message denied
+	call print_string
+
+	mov ah, 0x0e ;new line
+	mov al, 0x0d
+	int 0x10
+	mov al, 0x0a
+	int 0x10
+
+	jmp login_screen ;jump to login screen
+
+login_success:
+	mov si, msg_welcome ;print welcome message
+	call print_string
+
+	mov ah, 0x0e ;new line
+	mov al, 0x0d
+	int 0x10
+	mov al, 0x0a
+	int 0x10
+
+	mov si, prompt
+	call print_string
+
+	jmp main_loop
 
 main_loop:
 	mov ah, 0x00 ;keyboard read
