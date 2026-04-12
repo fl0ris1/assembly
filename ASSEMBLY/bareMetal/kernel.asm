@@ -1,10 +1,10 @@
-
 [org 0x1000]
 
-;---------- VIDEO CONSTANTS ----------
+; ---------- VIDEO CONSTANTS ----------
 VID_MEM equ 0xb800
-VID_MAIN equ 0x1f ;white on blue (main desktop)
+COL_MAIN equ 0x1f ;white on blue (main desktop). 1f in binary is 00011111 lower 4 bits are foreground, the 3 higher are the background and the highest one is blinking.
 COL_HEADER equ 0x70 ;black on light gray (header)
+COL_ERROR equ 0x4f ;white text on red background
 
 start:
 	xor ax, ax ;explicitly set the segment registers
@@ -18,8 +18,6 @@ start:
 	mov ss, ax ;sets stack segment to 0
 	mov sp, 0xFFF0 ;sets stack pointer to adress 0xFFF0
 	sti ;enables hardware interrupts
-
-	;print the character '>'
 
 	mov bx, 0 ;initialize the buffer pointer
 
@@ -165,7 +163,7 @@ login_success:
 
 	call sleep_1s ;wait 1 second
 
-	call clear_screen ;clear screen
+	call draw_desktop_ui
 
 	jmp reset_prompt
 
@@ -244,9 +242,11 @@ process_command:
 	jmp unkown_command
 
 reset_prompt:
-	mov bx, 0 ;clear index. sets the index of the buffer back to the beginning
 	mov si, prompt
-	call print_string
+	mov bl, COL_MAIN
+	call print_string_attr
+	mov bx, 0 ;clear index. sets the index of the buffer back to the beginning
+
 	jmp main_loop
 
 handle_backspace:
@@ -359,32 +359,212 @@ sleep_1s:
 
 	ret
 
-clear_screen:
+video_init_blue:
 	;input: none
 	;output: clears screen to blue background
 
-	push es ;extra segment
 	push ax
 	push cx
 	push di ;destination index
+	push es ;extra segment
 
-	mov ax, 0xb800
+	mov ax, VID_MEM
 	mov es, ax ;points es to video memory, which we will manipulate
 
 	xor di, di ;sets destination index to 0
 
-	mov ax, 0x1f20 ;1f in binary is 00011111 lower 4 bits are foreground, the 3 higher are the background and the highest one is blinking. 0x20 is a space in hex
+	mov ah, COL_MAIN ;moves main color into ah
+	mov al, ' '
 
 	;set counter, 80 columns x 25 rows = 2000 words (1 word = 2 bytes. The 2 bytes are the attributes and the character)
 	mov cx, 2000
 
 	rep stosw ;write ax to [es:di] 2 thousand times. stosw stores a word (2 bytes that are attribute and character) in memory
 
+	mov ah, 0x02 ;set cursor position
+	mov bh, 0 ;page 0
+	mov dh, 1 ;row 0 1
+	mov dl, 0 ;column 0
+	int 0x10
+
+	pop es ;!!ES IS USED FOR ACCESSING VARIABLES, RESTORE AFTER POPPING!!
 	pop di
 	pop cx
 	pop ax
-	pop es ;!!ES IS USED FOR ACCESSING VARIABLES, RESTORE AFTER POPPING!!
 
+	ret
+
+draw_header:
+	push es
+	push di
+	push ax
+	push cx
+	push si
+
+	mov ax, VID_MEM
+	mov es, ax
+
+	xor di, di ;set di to 0
+	mov ah, COL_HEADER ;color of header
+	mov al, ' '
+	mov cx, 80 ;write ax to [es:di] 80 times
+	rep stosw
+
+	;memory offset = (row * 80 + column) * 2. Times 2 because character and attribute takes up 2 bytes (1 word)
+	;text starts at top row column 1 (2nd column). (0 * 80 + 1) * 2
+
+	mov di, 2 ;memory offset
+	mov si, os_title
+
+.title_loop:
+	lodsb ;load byte from [ds:si] into al, then increments si
+	cmp al, 0
+	je .done
+
+	mov ah, COL_HEADER
+	mov [es:di], ax ;write character and attribute to video memory
+
+	add di, 2 ;change offset by 2 (2 character and attribute stored)
+	jmp .title_loop
+
+.done:
+	pop si
+	pop cx
+	pop ax
+	pop di
+	pop es
+	ret
+
+draw_footer:
+	push es
+	push di
+	push ax
+	push cx
+	push si
+
+	mov ax, VID_MEM
+	mov es, ax
+
+	mov di, 3840 ;(24 * 80) * 2
+
+	mov ah, COL_HEADER
+	mov al, ' '
+	mov cx, 80 ;whole last row
+	rep stosw
+
+	mov di, 3842 ; extra 2 spaces from last row
+	mov si, os_footer
+
+.footer_loop:
+	lodsb ;loads byte from [ds:si] into al
+	cmp al, 0
+	je .done
+
+	mov ah, COL_HEADER
+	mov [es:di], ax
+	add di, 2
+	jmp .footer_loop
+
+.done:
+	pop si
+	pop cx
+	pop ax
+	pop di
+	pop es
+	ret
+
+
+draw_desktop_ui:
+	call video_init_blue
+	call draw_header
+	call draw_footer
+	ret
+
+print_string_attr:
+	;input: SI = adress of string
+	;	BL = color attribute
+
+	push ax
+	push bx
+	push cx
+	push dx
+	push di
+	push es
+
+	mov ax, VID_MEM
+	mov es, ax ;setup video memory
+
+.loop:
+	mov al, [si] ;load character
+	cmp al, 0 ;check if null terminator
+	je .done
+
+	cmp al, 0x0d ;carriage return
+	je .handle_cr
+	cmp al, 0x0a ;line feed
+	je .handle_lf
+
+	mov ah, 0x03 ;get cursor position
+	mov bh, 0
+	int 0x10 ;returns dh = row, dl = column
+
+	xor ch, ch
+	mov ch, dh ;move row into ch
+	mov ax, 80
+	mul ch ;calculate meomry offset
+
+	xor ch, ch
+	mov cl, dl
+	add ax, cx
+	mov di, ax ;move ax into di
+	shl di, 1 ;multipy di by 2 (2 bytes per cell)
+
+	mov al, [si] ;again, because al was changed by mul
+	mov ah, bl ;move attribute into ah
+	mov [es:di], ax ;move attribute and character into video memory
+
+	inc dl
+	cmp dl, 80 ;check if cursor hit right edge
+	jl .update_cursor
+
+	mov dl, 0 ;set column to 0 (left edge)
+	inc dh ;change cursor position one row down
+
+.update_cursor:
+	mov ah, 0x02 ;set cursor position
+	mov bh, 0
+	int 0x10
+
+	inc si ;next character
+	jmp .loop
+
+.handle_cr:
+	mov ah, 0x03 ;get cursor positition
+	int 0x10
+	mov dl, 0 ;set column to 0 (left edge)
+	mov ah, 0x02
+	int 0x10 ;update cursor position
+
+	inc si ;next character
+	jmp .loop
+
+.handle_lf:
+	mov ah, 0x03 ;get cursor position
+	int 0x10
+	inc dh ;change cursor position one row down
+	mov ah, 0x02 ;update cursor position
+	int 0x10
+
+	inc si ;next character
+	jmp .loop
+
+.done:
+	pop es
+	pop di
+	pop dx
+	pop cx
+	pop bx
+	pop ax
 	ret
 
 ; ---------- COMMAND LIBRARY ----------
@@ -442,10 +622,11 @@ execute_reboot:
 
 unkown_command:
 	mov si, msg_unknown ;prints unkown command message
-	call print_string
+	mov bl, COL_ERROR
+	call print_string_attr
 
-	mov si, buffer ;prints buffer (command that is not recognised
-	call print_string
+	mov si, buffer ;prints buffer (command that is not recognised)
+	call print_string_attr
 
 	mov ah, 0x0e
 	mov al, 0x0d ;return carrier
@@ -479,4 +660,9 @@ msg_login_prompt: db 'Login: ', 0
 msg_pass_prompt: db 'Password: ', 0
 msg_denied: db 'Access Denied.', 0
 msg_welcome: db 'Welcome, Administrator.', 0
+
+; ---------- UI STRINGS ----------
+
+os_title: db 'MaioloOS v1.0', 0
+os_footer: db 'F1: Help   F2: Clear   F3: Time', 0
 
