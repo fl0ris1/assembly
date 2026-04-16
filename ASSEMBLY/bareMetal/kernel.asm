@@ -1,5 +1,6 @@
 [org 0x1000]
 
+
 ; ---------- VIDEO CONSTANTS ----------
 VID_MEM equ 0xb800
 COL_MAIN equ 0x1f ;white on blue (main desktop). 1f in binary is 00011111 lower 4 bits are foreground, the 3 higher are the background and the highest one is blinking.
@@ -205,10 +206,20 @@ handle_enter:
 	mov al, 0x0d ;carriage return (returns to the beginning of the line)
 	int 0x10
 
+	mov ah, 0x03 ;until jge .scroll and .scroll unoriginal
+	int 0x10
+	cmp dh, 23
+	jge .scroll
+
+	mov ah, 0x0e
 	mov al, 0x0a ;line feed (new line)
 	int 0x10
 
 	jmp process_command ;handoff to the dispatcher
+
+.scroll:
+	call scroll_workspace
+	jmp process_command
 
 process_command:
 	;1. Handle Empty Input
@@ -527,8 +538,13 @@ print_string_attr:
 	cmp dl, 80 ;check if cursor hit right edge
 	jl .update_cursor
 
+	;line wrap #TODO: add scroll logic
 	mov dl, 0 ;set column to 0 (left edge)
+	cmp dh, 23
+	jge .do_scroll
+
 	inc dh ;change cursor position one row down
+	jmp .update_cursor 
 
 .update_cursor:
 	mov ah, 0x02 ;set cursor position
@@ -540,6 +556,7 @@ print_string_attr:
 
 .handle_cr:
 	mov ah, 0x03 ;get cursor positition
+	mov bh, 0
 	int 0x10
 	mov dl, 0 ;set column to 0 (left edge)
 	mov ah, 0x02
@@ -551,8 +568,21 @@ print_string_attr:
 .handle_lf:
 	mov ah, 0x03 ;get cursor position
 	int 0x10
+	
+	cmp dh, 23 ;compare row to 23 23
+	jge .do_scroll ;jump if greater than or equal jge
+
 	inc dh ;change cursor position one row down
+
+	jmp .set_cursor
+
+.do_scroll:
+	call scroll_workspace ;cursor stays on 23 so we dont change dh (row)
+	jmp .set_cursor ;update cursor position
+
+.set_cursor:
 	mov ah, 0x02 ;update cursor position
+	mov bh, 0
 	int 0x10
 
 	inc si ;next character
@@ -561,6 +591,29 @@ print_string_attr:
 .done:
 	pop es
 	pop di
+	pop dx
+	pop cx
+	pop bx
+	pop ax
+	ret
+
+scroll_workspace:
+	push ax
+	push bx
+	push cx
+	push dx
+
+	mov ah, 0x06 ;scroll active page up
+	mov al, 1 ;scroll up by one line
+	mov bh, COL_MAIN
+
+	mov ch, 1 ;cx = row and column of upper left corner
+	mov cl, 0
+	mov dh, 23 ;dx = row and column of lower right corner
+	mov dl, 79
+
+	int 0x10
+
 	pop dx
 	pop cx
 	pop bx
