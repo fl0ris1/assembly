@@ -1,11 +1,13 @@
 [org 0x1000]
 
+;rep is for stos/lods. loop is for the rest
 
 ; ---------- VIDEO CONSTANTS ----------
 VID_MEM equ 0xb800
 COL_MAIN equ 0x1f ;white on blue (main desktop). 1f in binary is 00011111 lower 4 bits are foreground, the 3 higher are the background and the highest one is blinking.
 COL_HEADER equ 0x70 ;black on light gray (header)
 COL_ERROR equ 0x4f ;white text on red background
+
 
 start:
 	xor ax, ax ;explicitly set the segment registers
@@ -161,10 +163,17 @@ check_password:
 login_success:
 	mov si, msg_welcome ;print welcome message
 	call print_string
+	
+	call sleep_1s
+
+	call draw_loading_screen
 
 	call sleep_1s ;wait 1 second
 
 	call draw_desktop_ui
+
+	mov ax, 440
+	call sound_on
 
 	jmp reset_prompt
 
@@ -222,34 +231,48 @@ handle_enter:
 	jmp process_command
 
 process_command:
-	;1. Handle Empty Input
+	;Handle Empty Input
 
 	mov al, [buffer]
 	cmp al, 0 ;checks if buffer is empty
 	je reset_prompt
 
-	;2. Check For 'help'
+	;Check For 'help'
 
 	mov si, buffer ;si points to user input
 	mov di, cmd_help ;di points to 'help' string
 	call strcmp ;compare si with di
 	je execute_help ;jump to execute_help if equal
 
-	;3. Check For 'reboot'
+	;Check For 'reboot'
 
 	mov si, buffer
 	mov di, cmd_reboot
 	call strcmp
 	je execute_reboot
 
-	;4. Check For 'time'
+	;Check For 'time'
 
 	mov si, buffer
 	mov di, cmd_time
 	call strcmp
 	je execute_time
 
-	;5. Fallback: Unkown Command
+	;Check For 'cls
+
+	mov si, buffer
+	mov di, cmd_cls
+	call strcmp
+	je execute_cls
+
+	;Check For 'reset'
+
+	mov si, buffer
+	mov di, cmd_reset
+	call strcmp
+	je reset_shell
+	
+	;Fallback: Unkown Command
 	jmp unkown_command
 
 reset_prompt:
@@ -360,13 +383,28 @@ get_rtc_register:
 sleep_1s:
 	;input: none (hardcoded to 1 second)
 	;output: none (waits and returns)
-	;100,000,000 microseconds = 0x000F4240 hex = 1 second.
+	;1,000,000 microseconds = 0x000F4240 hex = 1 second.
 
 	mov ah, 0x86 ;opcode for wait
 	mov cx, 0xF ;top half of 0x000F4240
 	mov dx, 0x4240 ;bottom half of 0x000F4240
-
 	int 0x15
+
+	ret
+
+sleep_tick:
+	push cx
+	push dx
+	push ax
+
+	mov ah, 0x86 ;wait function
+	mov cx, 1 ;100,000 micro seconds in hex = 168a0. CX holds the high word, dx holds the low hold (first 2 bytes)
+	mov dx, 0x86a0
+	int 0x15
+
+	pop ax
+	pop dx
+	pop cx
 
 	ret
 
@@ -538,7 +576,7 @@ print_string_attr:
 	cmp dl, 80 ;check if cursor hit right edge
 	jl .update_cursor
 
-	;line wrap #TODO: add scroll logic
+	;line wrap 
 	mov dl, 0 ;set column to 0 (left edge)
 	cmp dh, 23
 	jge .do_scroll
@@ -620,6 +658,113 @@ scroll_workspace:
 	pop ax
 	ret
 
+draw_loading_screen:
+	mov ah, 0x02 ;set cursor postition
+	mov bh, 0x00 ;page 0
+	mov dh, 13 ;row
+	mov dl, 24 ;column
+	int 0x10
+
+	mov si, msg_loading
+	mov bl, 0x0f ;white text on black background 7
+	call print_string_attr
+
+	mov ah, 0x02 ;#inc dh 
+	mov bh, 0x00
+	mov dh, 12 ;move cursor 1 row down##NOW UP SHOULD BE DOWN
+	mov dl, 24
+	int 0x10
+
+	mov cx, 25 ;length of the bar (20 blocks)
+
+.bar_loop:
+	push cx
+	
+	mov ah, 0x09 ;write char/attribute at current position
+	mov al, 0xDB ;full block character
+	mov bh, 0x00 ;page 0
+	mov bl, 0x0f ;light green text on blue background (0001 1010) 7
+	mov cx, 1 ;print 1 character
+	int 0x10
+	
+	mov ah, 0x03 ;get cursor position
+	int 0x10
+	inc dl ;increase column (1 to the right)
+	mov ah, 0x02 ;set cursor position
+	int 0x10
+
+	call sleep_tick ;wait 0,1 seconds
+
+	pop cx ;restore loop counter
+	loop .bar_loop ;decrement cx and jump to .bar_loop
+
+	mov ah, 0x03 ;get cursor position
+	int 0x10
+	dec dl ;mov cursor 1 column back
+	mov ah, 0x02
+	int 0x10
+
+	ret
+	
+move_cursor:
+	push ax
+	push bx
+
+	mov ah, 0x02 ;set cursor position
+	mov bh, 0 ;page 0
+	int 0x10
+
+	pop bx
+	pop ax
+	
+	ret
+
+sound_on:
+	push ax
+	push bx
+	push cx
+	push dx
+
+	;1. store desired frequency inside bx
+	mov bx, ax 
+	
+
+	;2. load the fixed base clock into DX:AX. 
+	;1,193,180 hz is the base frequency (1234dc in hex). You divide this by desired frequency and send it to channel 2 port 0x42
+	mov dx, 0x0012 ;high 16 bits
+	mov ax, 0x34dc ;low 16 bits
+
+	;3. calculate the divisor
+	div bx ;divide the base frequency by desired frequency
+
+	mov bx, ax ;move quotient into bx
+	
+	;4. configure PIT (channel 2, mode 3, binary)
+	mov al, 0xb6 ;10110110. Bits 7-6 select channel 2. Bits 5-4: read and write. First low byte, then high byte.
+				;Bits 3-1: mode 3, square wave generator. Bit 0: 16-bit binary mode (not BCD)
+
+	out 0x43, al ;send to command port
+
+	;5. send low byte
+	mov ax, bx ;move quotient into ax
+	out 0x43, al ;send lower byte of quotient
+
+	;5b. send high byte
+	mov al, bh
+	out 0x43, al
+
+	;6. enable the speaker (port 0x61)
+	in al, 0x61 ;read current state
+	or al, 0x03 ;force the bottom 2 bits to be on (for example: 10010000 or 0x03 (00000011) -> 10010011)
+	out 0x61, al ;write back to the port 
+
+	pop dx
+	pop cx
+	pop bx
+	pop ax
+	ret
+	
+
 ; ---------- COMMAND LIBRARY ----------
 
 execute_time:
@@ -636,11 +781,16 @@ execute_time:
 	call get_rtc_register ;read and print minutes
 	call print_bcd
 
-	mov ah, 0x0e
-	mov al, 0x0d
-	int 0x10
-	mov al, 0x0a
-	int 0x10
+	;mov ah, 0x0e
+	;mov al, 0x0d
+	;int 0x10
+	
+	;mov al, 0x0a
+	;int 0x10
+
+	mov si, new_line
+	mov bl, COL_MAIN
+	call print_string_attr
 
 	jmp reset_prompt
 
@@ -648,12 +798,17 @@ execute_help:
 	mov si, msg_help
 	call print_string
 
-	mov ah, 0x0e
-	mov al, 0x0d ;carrier return
-	int 0x10
+	;mov ah, 0x0e
+	;mov al, 0x0d ;carrier return
+	;int 0x10
 
-	mov al, 0x0a ;line feed
-	int 0x10
+	;mov al, 0x0a ;line feed
+	;int 0x10
+
+	mov si, new_line
+	mov bl, COL_MAIN
+	call print_string_attr
+
 
 	jmp reset_prompt
 
@@ -661,17 +816,59 @@ execute_reboot:
 	mov si, msg_reboot
 	call print_string ;print msg_reboot
 
-	mov ah, 0x0e ;new line
-	mov al, 0x0d
-	int 0x10
-	mov al, 0x0a
-	int 0x10
+	;mov ah, 0x0e ;new line
+	;mov al, 0x0d
+	;int 0x10	
+
+	;mov al, 0x0a
+	;int 0x10
+
+	mov si, new_line
+	mov bl, COL_MAIN
+	call print_string_attr
 
 	call sleep_1s ;wait 3 seconds
 	call sleep_1s
 	call sleep_1s
 
 	jmp 0xFFFF:0x0000 ;adress of BIOS reset vector
+
+execute_cls:
+	push es
+	push di
+	push ax
+	push cx
+
+	mov ax, VID_MEM
+	mov es, ax
+
+	mov di, 160 ;starting points of row 1 (80*2)
+	mov ah, COL_MAIN ;character attributes
+	mov al, ' ' ;space character
+
+	mov cx, 1840 ;23 rows * 80 columns
+
+	rep stosw ;stores ax value (2 bytes) into [ES:DI] and increase di by 2 (2 bytes) for cx times
+
+	mov dh, 1
+	mov dl, 0
+	call move_cursor
+
+	pop cx
+	pop ax
+	pop di
+	pop es
+
+	jmp reset_prompt
+
+reset_shell:
+	call draw_desktop_ui
+
+	mov dh, 1
+	mov dl, 0
+	call move_cursor
+
+	jmp reset_prompt
 
 unkown_command:
 	mov si, msg_unknown ;prints unkown command message
@@ -681,15 +878,21 @@ unkown_command:
 	mov si, buffer ;prints buffer (command that is not recognised)
 	call print_string_attr
 
-	mov ah, 0x0e
-	mov al, 0x0d ;return carrier
-	int 0x10
-	mov al, 0x0a ;line feed
-	int 0x10
+	;mov ah, 0x0e
+	;mov al, 0x0d ;return carrier
+	;int 0x10
+
+	;mov al, 0x0a ;line feed
+	;int 0x10
+
+	mov si, new_line
+	mov bl, COL_MAIN
+	call print_string_attr
 
 	jmp reset_prompt
 
 ; ---------- VARIABLES ----------
+new_line: db 0x0d, 0x0a, 0
 
 buffer: times 64 db 0
 
@@ -699,6 +902,8 @@ cmd_reboot: db 'reboot', 0
 msg_reboot: db 'System Restarting in 3 Seconds...', 0
 msg_unknown: db 'Unknown Command: ', 0
 cmd_time: db 'time', 0
+cmd_cls: db 'cls', 0
+cmd_reset: db 'reset', 0
 
 prompt: db 'root@maioloOS:~$ ', 0
 
@@ -713,7 +918,7 @@ msg_login_prompt: db 'Login: ', 0
 msg_pass_prompt: db 'Password: ', 0
 msg_denied: db 'Access Denied.', 0
 msg_welcome: db 'Welcome, Administrator.', 0
-
+msg_loading: db 'Loading System Modules...', 0
 ; ---------- UI STRINGS ----------
 
 os_title: db 'MaioloOS v1.0', 0
